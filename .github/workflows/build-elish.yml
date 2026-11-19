@@ -1,0 +1,62 @@
+name: Build elish OC Kernel
+
+on:
+  workflow_dispatch:
+
+env:
+  ARCH: arm64
+  SUBARCH: arm64
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+    - name: Checkout kernel source
+      uses: actions/checkout@v4
+      with:
+        repository: 1582130940/android_kernel_xiaomi_sm8250
+        ref: lineage-20.0
+        path: kernel
+        fetch-depth: 1
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq bc bison flex libssl-dev libncurses5-dev \
+          build-essential curl wget git cpio gzip abootimg 2>/dev/null || true
+
+    - name: Clone Proton Clang 12 toolchain
+      run: |
+        git clone --depth 1 https://github.com/kdrag0n/proton-clang.git toolchain 2>/dev/null || \
+        git clone --depth 1 -b 12 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git toolchain 2>/dev/null || true
+        ls toolchain/bin/*clang* 2>/dev/null | head -3 || echo "NO_CLANG"
+
+    - name: Build kernel
+      working-directory: kernel
+      run: |
+        export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+        export CLANG_TRIPLE=aarch64-linux-gnu-
+        export CROSS_COMPILE=aarch64-linux-gnu-
+        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+        make O=out ARCH=arm64 elish_defconfig 2>&1 | tail -20 || \
+          make O=out ARCH=arm64 vendor/elish_defconfig 2>&1 | tail -20
+        make -j$(nproc) O=out ARCH=arm64 \
+          CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          Image.gz-dtb 2>&1 | tail -30 || \
+        make -j$(nproc) O=out ARCH=arm64 \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          Image.gz-dtb 2>&1 | tail -30
+        ls -lh out/arch/arm64/boot/ 2>/dev/null || echo "NO_OUTPUT"
+
+    - name: Upload kernel image
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: elish-kernel
+        path: |
+          kernel/out/arch/arm64/boot/Image.gz-dtb
+          kernel/out/arch/arm64/boot/Image.gz
+          kernel/out/arch/arm64/boot/Image
+          kernel/out/arch/arm64/boot/dts/*.dtb
+        if-no-files-found: warn

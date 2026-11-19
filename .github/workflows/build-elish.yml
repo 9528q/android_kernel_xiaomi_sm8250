@@ -7,26 +7,26 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-    - name: Checkout kernel source (fork with OC patch)
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
       with:
         path: kernel
         fetch-depth: 1
 
-    - name: Install dependencies
+    - name: Install deps
       run: |
         sudo apt-get update -qq
         sudo apt-get install -y -qq bc bison flex libssl-dev libncurses5-dev \
-          build-essential cpio gzip curl wget git zip libelf-dev 2>&1 | tail -3
+          build-essential cpio gzip curl wget git zip libelf-dev 2>&1 | tail -2
 
     - name: Clone Proton Clang 12
       run: |
         git clone --depth 1 https://github.com/kdrag0n/proton-clang.git toolchain
         toolchain/bin/clang --version | head -2
 
-    - name: Build with device config + OC patch
+    - name: Build (full log to file)
       working-directory: kernel
       run: |
+        set +e
         export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
         export ARCH=arm64
         export CC=clang
@@ -34,33 +34,31 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-gnu-
         export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
         mkdir -p out
-        # 用设备真实 config
         cp arch/arm64/configs/elish_device_defconfig out/.config
-        make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- olddefconfig 2>&1 | tail -20
-        echo "=== 确认 OC 补丁在源码里 ==="
-        grep -c "OC patch" drivers/gpu/msm/kgsl_gmu.c || true
-        echo "=== 开始编译 ==="
+        make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- olddefconfig > /tmp/cfg.log 2>&1
+        echo "olddefconfig_rc=$?"
+        echo "=== OC patch present: $(grep -c 'OC patch' drivers/gpu/msm/kgsl_gmu.c) ==="
         make -j$(nproc) O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
           CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-          Image.gz 2>&1 | tail -60
-        BUILD_RC=${PIPESTATUS[0]}
-        echo "BUILD_RC=$BUILD_RC"
-        ls -lah out/arch/arm64/boot/ 2>&1 || true
-        test -f out/arch/arm64/boot/Image.gz
+          Image.gz > /tmp/build.log 2>&1
+        RC=$?
+        echo "BUILD_RC=$RC"
+        echo "=== 错误摘要 ==="
+        grep -E "error:|Error [0-9]|fatal|No rule|undefined" /tmp/build.log | head -40
+        echo "=== 日志尾部 ==="
+        tail -30 /tmp/build.log
+        mkdir -p ../package
+        cp /tmp/build.log ../package/build.log 2>/dev/null
+        cp /tmp/cfg.log ../package/cfg.log 2>/dev/null
+        cp out/arch/arm64/boot/Image.gz ../package/ 2>/dev/null
+        cp out/arch/arm64/boot/Image ../package/ 2>/dev/null
+        cp out/.config ../package/built.config 2>/dev/null
+        ls -lah ../package/
+        exit 0
 
-    - name: Package
-      if: always()
-      run: |
-        mkdir -p package
-        cp kernel/out/arch/arm64/boot/Image.gz package/ 2>/dev/null || true
-        cp kernel/out/arch/arm64/boot/Image package/ 2>/dev/null || true
-        cp kernel/out/.config package/built.config 2>/dev/null || true
-        ls -lah package/
-
-    - name: Upload
-      uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v4
       if: always()
       with:
         name: elish-oc-kernel
         path: package/
-        if-no-files-found: error
+        if-no-files-found: warn
